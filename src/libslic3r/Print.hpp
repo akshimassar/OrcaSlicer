@@ -281,6 +281,48 @@ public:
         std::vector<VolumeRegion>           volume_regions;
         std::vector<PaintedRegion>          painted_regions;
         std::vector<FuzzySkinPaintedRegion> fuzzy_skin_painted_regions;
+        // Variant without applying layer-range config. Used when apply_to_layers == odd/even.
+        std::vector<VolumeRegion>           volume_regions_base;
+        std::vector<PaintedRegion>          painted_regions_base;
+        std::vector<FuzzySkinPaintedRegion> fuzzy_skin_painted_regions_base;
+        // Last generated apply mode. Used to detect odd/even mode changes and force region regeneration.
+        ApplyToLayers                       apply_to_layers_cached { ApplyToLayers::All };
+
+        ApplyToLayers apply_to_layers() const {
+            if (this->config == nullptr || ! this->config->has("apply_to_layers"))
+                return ApplyToLayers::All;
+            return this->config->opt_enum<ApplyToLayers>("apply_to_layers");
+        }
+
+        bool use_layer_range_overrides(const size_t object_layer_idx) const {
+            switch (this->apply_to_layers()) {
+            case ApplyToLayers::All:
+                return true;
+            case ApplyToLayers::Odd:
+                return (object_layer_idx % 2) == 1;
+            case ApplyToLayers::Even:
+                return (object_layer_idx % 2) == 0;
+            }
+            return true;
+        }
+
+        const std::vector<VolumeRegion>& volume_regions_for_layer(const size_t object_layer_idx) const {
+            if (this->use_layer_range_overrides(object_layer_idx) || this->volume_regions_base.empty())
+                return this->volume_regions;
+            return this->volume_regions_base;
+        }
+
+        const std::vector<PaintedRegion>& painted_regions_for_layer(const size_t object_layer_idx) const {
+            if (this->use_layer_range_overrides(object_layer_idx) || this->painted_regions_base.empty())
+                return this->painted_regions;
+            return this->painted_regions_base;
+        }
+
+        const std::vector<FuzzySkinPaintedRegion>& fuzzy_skin_painted_regions_for_layer(const size_t object_layer_idx) const {
+            if (this->use_layer_range_overrides(object_layer_idx) || this->fuzzy_skin_painted_regions_base.empty())
+                return this->fuzzy_skin_painted_regions;
+            return this->fuzzy_skin_painted_regions_base;
+        }
 
         bool has_volume(const ObjectID id) const {
             auto it = lower_bound_by_predicate(this->volumes.begin(), this->volumes.end(), [id](const VolumeExtents &l) { return l.volume_id < id; });

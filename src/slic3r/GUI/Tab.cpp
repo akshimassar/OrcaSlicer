@@ -2641,7 +2641,7 @@ void TabPrint::build()
         optgroup->append_single_option_line("spiral_mode_max_xy_smoothing", "others_settings_special_mode#max-xy-smoothing");
         optgroup->append_single_option_line("spiral_starting_flow_ratio", "others_settings_special_mode#spiral-starting-flow-ratio");
         optgroup->append_single_option_line("spiral_finishing_flow_ratio", "others_settings_special_mode#spiral-finishing-flow-ratio");
-
+        optgroup->append_single_option_line("apply_to_layers");
         optgroup->append_single_option_line("timelapse_type", "others_settings_special_mode#timelapse");
         optgroup->append_single_option_line("enable_wrapping_detection");
 
@@ -2952,11 +2952,10 @@ void TabPrintModel::update_model_config()
         }
         m_all_keys.clear();
         std::copy_if(all_keys.begin(), all_keys.end(), std::back_inserter(m_all_keys), [this](std::string & e) {
-            auto iter = std::lower_bound(m_keys.begin(), m_keys.end(), e);
-            if (auto n = e.find('#'); n == std::string::npos)
-                return iter != m_keys.end() && e == *iter;
-            else
-                return iter != m_keys.begin() && e.compare(0, n, *--iter) == 0;
+            auto n = e.find('#');
+            if (n == std::string::npos)
+                return std::find(m_keys.begin(), m_keys.end(), e) != m_keys.end();
+            return std::find(m_keys.begin(), m_keys.end(), e.substr(0, n)) != m_keys.end();
         });
         // except those than all equal on
         auto local_keys = substruct(m_all_keys, local_diffs);
@@ -3125,7 +3124,8 @@ void TabPrintModel::on_value_change(const std::string& opt_id, const boost::any&
                 config.second->set_key_value(opt_key, opt2);
             }
         }
-        m_all_keys = concat(m_all_keys, {opt_id2});
+        if (std::find(m_all_keys.begin(), m_all_keys.end(), opt_id2) == m_all_keys.end())
+            m_all_keys.push_back(opt_id2);
     }
     if (inull != m_null_keys.end())
         m_null_keys.erase(inull);
@@ -3159,7 +3159,8 @@ void TabPrintModel::reload_config()
             if (set) {
                 for (auto config : m_object_configs)
                     config.second->apply_only(*m_config, {k});
-                m_all_keys = concat(m_all_keys, {k});
+                if (std::find(m_all_keys.begin(), m_all_keys.end(), k) == m_all_keys.end())
+                    m_all_keys.push_back(k);
             }
             if (inull != m_null_keys.end()) m_null_keys.erase(inull);
         } else {
@@ -3419,8 +3420,9 @@ void TabPrintPart::notify_changed(ObjectBase * object)
 }
 
 static std::string layer_height = "layer_height";
+static std::string apply_to_layers = "apply_to_layers";
 TabPrintLayer::TabPrintLayer(ParamsPanel* parent) :
-    TabPrintModel(parent, concat({ layer_height }, PrintRegionConfig().keys()))
+    TabPrintModel(parent, concat({ apply_to_layers, layer_height }, PrintRegionConfig().keys()))
 {
     m_parent_tab = wxGetApp().get_model_tab();
 }
@@ -3431,6 +3433,9 @@ void TabPrintLayer::notify_changed(ObjectBase * object)
         if (!config.second->has(layer_height)) {
             auto option = m_parent_tab->get_config()->option(layer_height);
             config.second->set_key_value(layer_height, option->clone());
+        }
+        if (!config.second->has(apply_to_layers)) {
+            config.second->set_key_value(apply_to_layers, new ConfigOptionEnum<ApplyToLayers>(ApplyToLayers::All));
         }
         auto objects_list = wxGetApp().obj_list();
         wxDataViewItemArray items;
@@ -3443,16 +3448,26 @@ void TabPrintLayer::notify_changed(ObjectBase * object)
 void TabPrintLayer::update_custom_dirty(std::vector<std::string> &dirty_options, std::vector<std::string> &nonsys_options)
 {
     TabPrintModel::update_custom_dirty(dirty_options, nonsys_options);
-    auto option = m_parent_tab->get_config()->option(layer_height);
+    auto option_layer_height = m_parent_tab->get_config()->option(layer_height);
     for (auto config : m_object_configs) {
         if (!config.second->has(layer_height)) {
-            config.second->set_key_value(layer_height, option->clone());
+            config.second->set_key_value(layer_height, option_layer_height->clone());
             dirty_options.erase(std::remove(dirty_options.begin(), dirty_options.end(), layer_height), dirty_options.end());
             nonsys_options.erase(std::remove(nonsys_options.begin(), nonsys_options.end(), layer_height), nonsys_options.end());
         }
-        else if (config.second->opt_float(layer_height) == option->getFloat()) {
+        else if (config.second->opt_float(layer_height) == option_layer_height->getFloat()) {
             dirty_options.erase(std::remove(dirty_options.begin(), dirty_options.end(), layer_height), dirty_options.end());
             nonsys_options.erase(std::remove(nonsys_options.begin(), nonsys_options.end(), layer_height), nonsys_options.end());
+        }
+
+        if (!config.second->has(apply_to_layers)) {
+            config.second->set_key_value(apply_to_layers, new ConfigOptionEnum<ApplyToLayers>(ApplyToLayers::All));
+            dirty_options.erase(std::remove(dirty_options.begin(), dirty_options.end(), apply_to_layers), dirty_options.end());
+            nonsys_options.erase(std::remove(nonsys_options.begin(), nonsys_options.end(), apply_to_layers), nonsys_options.end());
+        }
+        else if (config.second->option(apply_to_layers)->getInt() == int(ApplyToLayers::All)) {
+            dirty_options.erase(std::remove(dirty_options.begin(), dirty_options.end(), apply_to_layers), dirty_options.end());
+            nonsys_options.erase(std::remove(nonsys_options.begin(), nonsys_options.end(), apply_to_layers), nonsys_options.end());
         }
     }
 }

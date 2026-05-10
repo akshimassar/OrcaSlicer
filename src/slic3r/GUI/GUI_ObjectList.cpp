@@ -2662,7 +2662,8 @@ void ObjectList::del_settings_from_config(const wxDataViewItem& parent_item)
 
     const size_t opt_cnt = m_config->keys().size();
     if ((opt_cnt == 1 && m_config->has("extruder")) ||
-        (is_layer_settings && opt_cnt == 2 && m_config->has("extruder") && m_config->has("layer_height")))
+        (is_layer_settings && opt_cnt == 2 && m_config->has("extruder") && m_config->has("layer_height")) ||
+        (is_layer_settings && opt_cnt == 3 && m_config->has("extruder") && m_config->has("layer_height") && m_config->has("apply_to_layers")))
         return;
 
     take_snapshot("Delete Settings");
@@ -2670,8 +2671,11 @@ void ObjectList::del_settings_from_config(const wxDataViewItem& parent_item)
     int extruder = m_config->has("extruder") ? m_config->extruder() : -1;
 
     coordf_t layer_height = 0.0;
+    int      apply_to_layers = int(ApplyToLayers::All);
     if (is_layer_settings)
         layer_height = m_config->opt_float("layer_height");
+    if (is_layer_settings && m_config->has("apply_to_layers"))
+        apply_to_layers = m_config->option("apply_to_layers")->getInt();
 
     m_config->reset();
 
@@ -2679,6 +2683,8 @@ void ObjectList::del_settings_from_config(const wxDataViewItem& parent_item)
         m_config->set_key_value("extruder", new ConfigOptionInt(extruder));
     if (is_layer_settings)
         m_config->set_key_value("layer_height", new ConfigOptionFloat(layer_height));
+    if (is_layer_settings)
+        m_config->set_key_value("apply_to_layers", new ConfigOptionEnum<ApplyToLayers>(ApplyToLayers(apply_to_layers)));
 
     changed_object();
 }
@@ -3281,6 +3287,7 @@ DynamicPrintConfig ObjectList::get_default_layer_config(const int obj_idx)
                             object(obj_idx)->config.opt_float("layer_height") :
                             wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_float("layer_height");
     config.set_key_value("layer_height",new ConfigOptionFloat(layer_height));
+    config.set_key_value("apply_to_layers", new ConfigOptionEnum<ApplyToLayers>(ApplyToLayers::All));
     // BBS
     int extruder = object(obj_idx)->config.has("extruder") ?
         object(obj_idx)->config.opt_int("extruder") :

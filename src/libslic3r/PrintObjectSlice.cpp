@@ -259,46 +259,49 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
     {
         size_t z_idx = 0;
         for (const PrintObjectRegions::LayerRangeRegions &layer_range : print_object_regions.layer_ranges) {
-            for (; z_idx < zs.size() && zs[z_idx] < layer_range.layer_height_range.first; ++ z_idx) ;
-            if (layer_range.volume_regions.empty()) {
-            } else if (layer_range.volume_regions.size() == 1) {
-                const ModelVolume *model_volume = layer_range.volume_regions.front().model_volume;
-                assert(model_volume != nullptr);
-                if (model_volume->is_model_part()) {
-                    VolumeSlices &slices_src = volume_slices_find_by_id(volume_slices, model_volume->id());
-                    auto         &slices_dst = slices_by_region[layer_range.volume_regions.front().region->print_object_region_id()];
-                    for (; z_idx < zs.size() && zs[z_idx] < layer_range.layer_height_range.second; ++ z_idx)
+            for (; z_idx < zs.size() && zs[z_idx] < layer_range.layer_height_range.first; ++ z_idx)
+                ;
+            for (; z_idx < zs.size() && zs[z_idx] < layer_range.layer_height_range.second; ++ z_idx) {
+                const auto &volume_regions = layer_range.volume_regions_for_layer(z_idx);
+                if (volume_regions.empty())
+                    continue;
+
+                if (volume_regions.size() == 1) {
+                    const ModelVolume *model_volume = volume_regions.front().model_volume;
+                    assert(model_volume != nullptr);
+                    if (model_volume->is_model_part()) {
+                        VolumeSlices &slices_src = volume_slices_find_by_id(volume_slices, model_volume->id());
+                        auto         &slices_dst = slices_by_region[volume_regions.front().region->print_object_region_id()];
                         slices_dst[z_idx] = std::move(slices_src.slices[z_idx]);
+                    }
+                    continue;
                 }
-            } else {
-                zs_complex.reserve(zs.size());
-                for (; z_idx < zs.size() && zs[z_idx] < layer_range.layer_height_range.second; ++ z_idx) {
-                    float z                          = zs[z_idx];
-                    int   idx_first_printable_region = -1;
-                    bool  complex                    = false;
-                    for (int idx_region = 0; idx_region < int(layer_range.volume_regions.size()); ++ idx_region) {
-                        const PrintObjectRegions::VolumeRegion &region = layer_range.volume_regions[idx_region];
-                        if (region.bbox->min().z() <= z && region.bbox->max().z() >= z) {
-                            if (idx_first_printable_region == -1 && region.model_volume->is_model_part())
-                                idx_first_printable_region = idx_region;
-                            else if (idx_first_printable_region != -1) {
-                                // Test for overlap with some other region.
-                                for (int idx_region2 = idx_first_printable_region; idx_region2 < idx_region; ++ idx_region2) {
-                                    const PrintObjectRegions::VolumeRegion &region2 = layer_range.volume_regions[idx_region2];
-                                    if (region2.bbox->min().z() <= z && region2.bbox->max().z() >= z && overlap_in_xy(*region.bbox, *region2.bbox)) {
-                                        complex = true;
-                                        break;
-                                    }
+
+                const float z = zs[z_idx];
+                int         idx_first_printable_region = -1;
+                bool        complex                    = false;
+                for (int idx_region = 0; idx_region < int(volume_regions.size()); ++ idx_region) {
+                    const PrintObjectRegions::VolumeRegion &region = volume_regions[idx_region];
+                    if (region.bbox->min().z() <= z && region.bbox->max().z() >= z) {
+                        if (idx_first_printable_region == -1 && region.model_volume->is_model_part())
+                            idx_first_printable_region = idx_region;
+                        else if (idx_first_printable_region != -1) {
+                            for (int idx_region2 = idx_first_printable_region; idx_region2 < idx_region; ++ idx_region2) {
+                                const PrintObjectRegions::VolumeRegion &region2 = volume_regions[idx_region2];
+                                if (region2.bbox->min().z() <= z && region2.bbox->max().z() >= z && overlap_in_xy(*region.bbox, *region2.bbox)) {
+                                    complex = true;
+                                    break;
                                 }
                             }
                         }
                     }
-                    if (complex)
-                        zs_complex.push_back({ z_idx, z });
-                    else if (idx_first_printable_region >= 0) {
-                        const PrintObjectRegions::VolumeRegion &region = layer_range.volume_regions[idx_first_printable_region];
-                        slices_by_region[region.region->print_object_region_id()][z_idx] = std::move(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);
-                    }
+                }
+
+                if (complex) {
+                    zs_complex.push_back({ z_idx, z });
+                } else if (idx_first_printable_region >= 0) {
+                    const PrintObjectRegions::VolumeRegion &region = volume_regions[idx_first_printable_region];
+                    slices_by_region[region.region->print_object_region_id()][z_idx] = std::move(volume_slices_find_by_id(volume_slices, region.model_volume->id()).slices[z_idx]);
                 }
             }
             throw_on_cancel_callback();
@@ -307,16 +310,9 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
 
     // Second perform region clipping and assignment in parallel.
     if (! zs_complex.empty()) {
-        std::vector<std::vector<VolumeSlices*>> layer_ranges_regions_to_slices(print_object_regions.layer_ranges.size(), std::vector<VolumeSlices*>());
-        for (const PrintObjectRegions::LayerRangeRegions &layer_range : print_object_regions.layer_ranges) {
-            std::vector<VolumeSlices*> &layer_range_regions_to_slices = layer_ranges_regions_to_slices[&layer_range - print_object_regions.layer_ranges.data()];
-            layer_range_regions_to_slices.reserve(layer_range.volume_regions.size());
-            for (const PrintObjectRegions::VolumeRegion &region : layer_range.volume_regions)
-                layer_range_regions_to_slices.push_back(&volume_slices_find_by_id(volume_slices, region.model_volume->id()));
-        }
         tbb::parallel_for(
             tbb::blocked_range<size_t>(0, zs_complex.size()),
-            [&slices_by_region, &print_object_regions, &zs_complex, &layer_ranges_regions_to_slices, clip_multipart_objects, &throw_on_cancel_callback]
+            [&slices_by_region, &print_object_regions, &zs_complex, &volume_slices, clip_multipart_objects, &throw_on_cancel_callback]
                 (const tbb::blocked_range<size_t> &range) {
                 float z              = zs_complex[range.begin()].second;
                 auto  it_layer_range = layer_range_first(print_object_regions.layer_ranges, z);
@@ -368,22 +364,22 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                     auto [z_idx, z] = zs_complex[zs_complex_idx];
                     it_layer_range = layer_range_next(print_object_regions.layer_ranges, it_layer_range, z);
                     const PrintObjectRegions::LayerRangeRegions &layer_range = *it_layer_range;
+                    const auto &volume_regions = layer_range.volume_regions_for_layer(z_idx);
                     {
-                        std::vector<VolumeSlices*> &layer_range_regions_to_slices = layer_ranges_regions_to_slices[it_layer_range - print_object_regions.layer_ranges.begin()];
-                        // Per volume_regions slices at thiz Z height.
+                        // Per volume_regions slices at this Z height.
                         temp_slices.clear();
-                        temp_slices.reserve(layer_range.volume_regions.size());
-                        for (VolumeSlices* &slices : layer_range_regions_to_slices) {
-                            const PrintObjectRegions::VolumeRegion &volume_region = layer_range.volume_regions[&slices - layer_range_regions_to_slices.data()];
-                            temp_slices.push_back({ std::move(slices->slices[z_idx]), volume_region.region ? volume_region.region->print_object_region_id() : -1, volume_region.model_volume->id() });
+                        temp_slices.reserve(volume_regions.size());
+                        for (const PrintObjectRegions::VolumeRegion &volume_region : volume_regions) {
+                            VolumeSlices &slices = volume_slices_find_by_id(volume_slices, volume_region.model_volume->id());
+                            temp_slices.push_back({ std::move(slices.slices[z_idx]), volume_region.region ? volume_region.region->print_object_region_id() : -1, volume_region.model_volume->id() });
                         }
                     }
-                    for (int idx_region = 0; idx_region < int(layer_range.volume_regions.size()); ++ idx_region)
+                    for (int idx_region = 0; idx_region < int(volume_regions.size()); ++ idx_region)
                         if (! temp_slices[idx_region].expolygons.empty()) {
-                            const PrintObjectRegions::VolumeRegion &region = layer_range.volume_regions[idx_region];
+                            const PrintObjectRegions::VolumeRegion &region = volume_regions[idx_region];
                             if (region.model_volume->is_modifier()) {
                                 assert(region.parent > -1);
-                                bool next_region_same_modifier = idx_region + 1 < int(temp_slices.size()) && layer_range.volume_regions[idx_region + 1].model_volume == region.model_volume;
+                                bool next_region_same_modifier = idx_region + 1 < int(temp_slices.size()) && volume_regions[idx_region + 1].model_volume == region.model_volume;
                                 RegionSlice &parent_slice = temp_slices[region.parent];
                                 RegionSlice &this_slice   = temp_slices[idx_region];
                                 ExPolygons   source       = std::move(this_slice.expolygons);
@@ -402,11 +398,11 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
                                     if (! temp_slices[idx_region2].expolygons.empty()) {
                                         // Skip trim_overlap for now, because it slow down the performace so much for some special cases
 #if 1
-                                        if (const PrintObjectRegions::VolumeRegion& region2 = layer_range.volume_regions[idx_region2];
+                                        if (const PrintObjectRegions::VolumeRegion& region2 = volume_regions[idx_region2];
                                             !region2.model_volume->is_negative_volume() && overlap_in_xy(*region.bbox, *region2.bbox))
                                             temp_slices[idx_region2].expolygons = diff_ex(temp_slices[idx_region2].expolygons, temp_slices[idx_region].expolygons);
 #else
-                                        const PrintObjectRegions::VolumeRegion& region2 = layer_range.volume_regions[idx_region2];
+                                        const PrintObjectRegions::VolumeRegion& region2 = volume_regions[idx_region2];
                                         if (!region2.model_volume->is_negative_volume() && overlap_in_xy(*region.bbox, *region2.bbox))
                                             //BBS: handle negative_volume seperately, always minus the negative volume and don't need to trim overlap
                                             if (!region.model_volume->is_negative_volume())
@@ -874,6 +870,8 @@ static inline void apply_mm_segmentation(PrintObject &print_object, ThrowOnCance
                 Layer &layer = *print_object.get_layer(int(layer_id));
                 it_layer_range = layer_range_next(layer_ranges, it_layer_range, layer.slice_z);
                 const PrintObjectRegions::LayerRangeRegions &layer_range = *it_layer_range;
+                const auto &volume_regions = layer_range.volume_regions_for_layer(layer_id);
+                const auto &painted_regions = layer_range.painted_regions_for_layer(layer_id);
                 // Gather per extruder expolygons.
                 by_extruder.assign(num_extruders, ByExtruder());
                 by_region.assign(layer.region_count(), ByRegion());
@@ -891,10 +889,10 @@ static inline void apply_mm_segmentation(PrintObject &print_object, ThrowOnCance
                     continue;
 
                 // Split LayerRegions by by_extruder regions.
-                // layer_range.painted_regions are sorted by extruder ID and parent PrintObject region ID.
-                auto it_painted_region_begin = layer_range.painted_regions.cbegin();
+                // painted_regions are sorted by extruder ID and parent PrintObject region ID.
+                auto it_painted_region_begin = painted_regions.cbegin();
                 for (int parent_layer_region_idx = 0; parent_layer_region_idx < layer.region_count(); ++parent_layer_region_idx) {
-                    if (it_painted_region_begin == layer_range.painted_regions.cend())
+                    if (it_painted_region_begin == painted_regions.cend())
                         continue;
 
                     const LayerRegion &parent_layer_region = *layer.get_region(parent_layer_region_idx);
@@ -904,14 +902,14 @@ static inline void apply_mm_segmentation(PrintObject &print_object, ThrowOnCance
                         continue;
 
                     // Find the first PaintedRegion, which overrides the parent PrintRegion.
-                    auto it_first_painted_region = std::find_if(it_painted_region_begin, layer_range.painted_regions.cend(), [&layer_range, &parent_print_region](const auto &painted_region) {
-                        return layer_range.volume_regions[painted_region.parent].region->print_object_region_id() == parent_print_region.print_object_region_id();
+                    auto it_first_painted_region = std::find_if(it_painted_region_begin, painted_regions.cend(), [&volume_regions, &parent_print_region](const auto &painted_region) {
+                        return volume_regions[painted_region.parent].region->print_object_region_id() == parent_print_region.print_object_region_id();
                     });
 
-                    if (it_first_painted_region == layer_range.painted_regions.cend())
+                    if (it_first_painted_region == painted_regions.cend())
                         continue; // This LayerRegion isn't overrides by any PaintedRegion.
 
-                    assert(&parent_print_region == layer_range.volume_regions[it_first_painted_region->parent].region);
+                    assert(&parent_print_region == volume_regions[it_first_painted_region->parent].region);
 
                     // Update the beginning PaintedRegion iterator for the next iteration.
                     it_painted_region_begin = it_first_painted_region;
@@ -925,12 +923,12 @@ static inline void apply_mm_segmentation(PrintObject &print_object, ThrowOnCance
                             continue;
 
                         // Find the first target region iterator.
-                        auto it_target_region = std::find_if(it_painted_region_begin, layer_range.painted_regions.cend(), [extruder_id](const auto &painted_region) {
+                        auto it_target_region = std::find_if(it_painted_region_begin, painted_regions.cend(), [extruder_id](const auto &painted_region) {
                             return int(painted_region.extruder_id) >= extruder_id;
                         });
 
-                        assert(it_target_region != layer_range.painted_regions.end());
-                        assert(layer_range.volume_regions[it_target_region->parent].region == &parent_print_region && int(it_target_region->extruder_id) == extruder_id);
+                        assert(it_target_region != painted_regions.end());
+                        assert(volume_regions[it_target_region->parent].region == &parent_print_region && int(it_target_region->extruder_id) == extruder_id);
 
                         // Update the beginning PaintedRegion iterator for the next iteration.
                         it_painted_region_begin = it_target_region;
@@ -1024,6 +1022,19 @@ void apply_fuzzy_skin_segmentation(PrintObject &print_object, ThrowOnCancel thro
             Layer &layer = *print_object.get_layer(int(layer_idx));
             it_layer_range = layer_range_next(layer_ranges, it_layer_range, layer.slice_z);
             const PrintObjectRegions::LayerRangeRegions &layer_range = *it_layer_range;
+            const auto &volume_regions = layer_range.volume_regions_for_layer(layer_idx);
+            const auto &painted_regions = layer_range.painted_regions_for_layer(layer_idx);
+            const auto &fuzzy_skin_painted_regions = layer_range.fuzzy_skin_painted_regions_for_layer(layer_idx);
+            auto parent_region_id = [&volume_regions, &painted_regions](const PrintObjectRegions::FuzzySkinPaintedRegion &region) {
+                if (region.parent_type == PrintObjectRegions::FuzzySkinPaintedRegion::ParentType::VolumeRegion)
+                    return volume_regions[region.parent].region->print_object_region_id();
+                return painted_regions[region.parent].region->print_object_region_id();
+            };
+            auto parent_region = [&volume_regions, &painted_regions](const PrintObjectRegions::FuzzySkinPaintedRegion &region) {
+                if (region.parent_type == PrintObjectRegions::FuzzySkinPaintedRegion::ParentType::VolumeRegion)
+                    return volume_regions[region.parent].region;
+                return painted_regions[region.parent].region;
+            };
 
             assert(segmentation[layer_idx].size() == 1);
             const ExPolygons &fuzzy_skin_segmentation      = segmentation[layer_idx][0];
@@ -1032,11 +1043,11 @@ void apply_fuzzy_skin_segmentation(PrintObject &print_object, ThrowOnCancel thro
                 continue;
 
             // Split LayerRegions by painted fuzzy skin regions.
-            // layer_range.fuzzy_skin_painted_regions are sorted by parent PrintObject region ID.
+            // fuzzy_skin_painted_regions are sorted by parent PrintObject region ID.
             std::vector<ByRegion> by_region(layer.region_count());
-            auto                  it_fuzzy_skin_region_begin = layer_range.fuzzy_skin_painted_regions.cbegin();
+            auto                  it_fuzzy_skin_region_begin = fuzzy_skin_painted_regions.cbegin();
             for (int parent_layer_region_idx = 0; parent_layer_region_idx < layer.region_count(); ++parent_layer_region_idx) {
-                if (it_fuzzy_skin_region_begin == layer_range.fuzzy_skin_painted_regions.cend())
+                if (it_fuzzy_skin_region_begin == fuzzy_skin_painted_regions.cend())
                     continue;
 
                 const LayerRegion &parent_layer_region = *layer.get_region(parent_layer_region_idx);
@@ -1046,14 +1057,14 @@ void apply_fuzzy_skin_segmentation(PrintObject &print_object, ThrowOnCancel thro
                     continue;
 
                 // Find the first FuzzySkinPaintedRegion, which overrides the parent PrintRegion.
-                auto it_fuzzy_skin_region = std::find_if(it_fuzzy_skin_region_begin, layer_range.fuzzy_skin_painted_regions.cend(), [&layer_range, &parent_print_region](const auto &fuzzy_skin_region) {
-                    return fuzzy_skin_region.parent_print_object_region_id(layer_range) == parent_print_region.print_object_region_id();
+                auto it_fuzzy_skin_region = std::find_if(it_fuzzy_skin_region_begin, fuzzy_skin_painted_regions.cend(), [&parent_region_id, &parent_print_region](const auto &fuzzy_skin_region) {
+                    return parent_region_id(fuzzy_skin_region) == parent_print_region.print_object_region_id();
                 });
 
-                if (it_fuzzy_skin_region == layer_range.fuzzy_skin_painted_regions.cend())
+                if (it_fuzzy_skin_region == fuzzy_skin_painted_regions.cend())
                     continue; // This LayerRegion isn't overrides by any FuzzySkinPaintedRegion.
 
-                assert(it_fuzzy_skin_region->parent_print_object_region(layer_range) == &parent_print_region);
+                assert(parent_region(*it_fuzzy_skin_region) == &parent_print_region);
 
                 // Update the beginning FuzzySkinPaintedRegion iterator for the next iteration.
                 it_fuzzy_skin_region_begin = std::next(it_fuzzy_skin_region);

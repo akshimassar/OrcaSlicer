@@ -267,6 +267,13 @@ static t_config_enum_values s_keys_map_WallDirection{
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WallDirection)
 
+static t_config_enum_values s_keys_map_ApplyToLayers {
+    { "all",  int(ApplyToLayers::All) },
+    { "odd",  int(ApplyToLayers::Odd) },
+    { "even", int(ApplyToLayers::Even) },
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(ApplyToLayers)
+
 //BBS
 static t_config_enum_values s_keys_map_PrintSequence {
     { "by layer",     int(PrintSequence::ByLayer) },
@@ -714,6 +721,20 @@ void PrintConfigDef::init_common_params()
     def->sidetext = L("mm");	// millimeters, CIS languages need translation
     def->min = 0;
     def->set_default_value(new ConfigOptionFloat(INITIAL_LAYER_HEIGHT));
+
+    def = this->add("apply_to_layers", coEnum);
+    def->label = L("Apply to layers");
+    def->category = L("Quality");
+    def->tooltip = L("Select whether a height range modifier is applied to all layers in the selected range, or only to odd/even object layers.");
+    def->enum_keys_map = &ConfigOptionEnum<ApplyToLayers>::get_enum_values();
+    def->enum_values.push_back("all");
+    def->enum_values.push_back("odd");
+    def->enum_values.push_back("even");
+    def->enum_labels.push_back(L("All"));
+    def->enum_labels.push_back(L("Odd"));
+    def->enum_labels.push_back(L("Even"));
+    def->mode = comAdvanced;
+    def->set_default_value(new ConfigOptionEnum<ApplyToLayers>(ApplyToLayers::All));
 
     def = this->add("printable_height", coFloat);
     def->label = L("Printable height");

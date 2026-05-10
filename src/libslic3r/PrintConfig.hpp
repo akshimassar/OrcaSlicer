@@ -131,6 +131,13 @@ enum class WallDirection
     Count,
 };
 
+enum class ApplyToLayers
+{
+    All,
+    Odd,
+    Even,
+};
+
 //BBS
 enum class PrintSequence {
     ByLayer,
